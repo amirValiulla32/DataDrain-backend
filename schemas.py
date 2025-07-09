@@ -7,11 +7,13 @@ class ScanRequest(BaseModel):
     partial_phone: str | None = Field(None, max_length=6)
     address: str | None = None
 
+class ScanResponse(BaseModel):
+    exposures: List[Exposure]
+
+    # schemas.py
 class Exposure(BaseModel):
     site: str
     status: Literal["found", "not_found", "error"]
     url: str | None = None
     matched_on: List[str] = []
-
-class ScanResponse(BaseModel):
-    exposures: List[Exposure]
+    extra: dict | None = None     # <-- new but optional
