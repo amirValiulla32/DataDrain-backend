@@ -1,54 +1,51 @@
-import os, httpx, re, html
+import os, html, httpx
 from typing import List
-from schemas import Exposure
-import html, re
 from bs4 import BeautifulSoup
-
+from schemas import Exposure
 
 API_KEY = os.getenv("HIBP_API_KEY")
-HEADERS = {
-    "hibp-api-key": API_KEY,
-    "user-agent": "DataDrain/0.1"
-}
+USER_AGENT = os.getenv("USER_AGENT", "DataDrain/0.1")
 URL = "https://haveibeenpwned.com/api/v3/breachedaccount/"
 
-
 def _strip_html(raw: str | None) -> str:
-    """Robustly remove all HTML while unescaping entities."""
+    """Unescape entities then remove all HTML tags."""
     if not raw:
         return ""
-    # BeautifulSoup automatically unescapes &lt; &gt; &quot;
-    return BeautifulSoup(raw, "html.parser").get_text(" ", strip=True)
+    return BeautifulSoup(html.unescape(raw), "html.parser").get_text(" ", strip=True)
 
-def check_email_breach(email: str) -> List[Exposure]:
-    """
-    Returns one Exposure per breach *or* a single 'not_found' record.
-    """
-    try:
-        r = httpx.get(URL + email, headers=HEADERS, timeout=10)
-        if r.status_code == 404:            # no breaches
-            return [Exposure(site="HaveIBeenPwned",
-                             status="not_found",
-                             matched_on=["email"])]
-        if r.status_code != 200:
-            raise RuntimeError(f"HIBP error {r.status_code}")
+async def check_email_breach(email: str) -> List[Exposure]:
+    """Return a list of Exposure objects for the given e-mail."""
+    headers = {"hibp-api-key": API_KEY, "User-Agent": USER_AGENT}
 
-        breaches = r.json()                 # list[dict]
-        exposures: list[Exposure] = []
-        for b in breaches:
-            exposures.append(
-                Exposure(
-                    site=b.get("Name") or b.get("Domain") or "Unknown",
-                    status="found",
-                    url=f"https://haveibeenpwned.com/Account/{email}",
-                    matched_on=["email"],
-                    # optional extra field you can show in a tooltip
-                    extra={"breach_date": b.get("BreachDate"),
-                           "description": _strip_html(b.get("Description", ""))}
-                )
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(f"{URL}{email}?truncateResponse=false", headers=headers)
+
+    exposures: List[Exposure] = []
+
+    if resp.status_code == 404:
+        exposures.append(Exposure(site="HaveIBeenPwned",
+                                  status="not_found",
+                                  matched_on=["email"]))
+        return exposures
+
+    if resp.status_code != 200:
+        exposures.append(Exposure(site="HaveIBeenPwned",
+                                  status="error",
+                                  matched_on=["email"],
+                                  extra={"detail": resp.text}))
+        return exposures
+
+    for b in resp.json():
+        exposures.append(
+            Exposure(
+                site=b.get("Name") or b.get("Domain") or "Unknown",
+                status="found",
+                url=f"https://haveibeenpwned.com/Account/{email}",
+                matched_on=["email"],
+                extra={
+                    "breach_date": b.get("BreachDate"),
+                    "description": _strip_html(b.get("Description"))
+                },
             )
-        return exposures or [Exposure(site="HaveIBeenPwned", status="error")]
-
-    except Exception as exc:
-        # log the exception here if you’re using structlog
-        return [Exposure(site="HaveIBeenPwned", status="error")]
+        )
+    return exposures
